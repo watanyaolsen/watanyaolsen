@@ -5,21 +5,21 @@
 //+------------------------------------------------------------------+
 #property copyright   "Copyright © 2026, AbahRay"
 #property link        "https://www.tiktok.com/@abahraytrader"
-#property version     "1.00"
+#property version     "1.02"
 #property description "Mindset Bank version\n"
 #property description "Original Code by AbahRay"
 
 #property indicator_chart_window
-#property indicator_buffers 4
-#property indicator_plots   4
+#property indicator_buffers 7
+#property indicator_plots   7
 
 //+----------------------------------------------+
 //| Indicator input parameters                   |
 //+----------------------------------------------+
-input uint               MA_Period  =          14;
+input uint               MA_Period  =          21;    // tuned for M1 responsiveness
 input ENUM_MA_METHOD     MA_Method  =    MODE_SMA;    // MA method
 input ENUM_APPLIED_PRICE MA_Price   = PRICE_CLOSE;    // MA Price
-input double             MA_Delta   =           0;    // MA min slope for signal (in ticks)
+input double             MA_Delta   =           0;    // MA min slope for signal (in ticks); 0 = rely on ATR adaptive threshold
 input group "Appearance"
 input uint              ATR_Period  =          60;    // ATR Period
 input uint               SymbolBuy  =         233;    // Symbol Buy
@@ -27,17 +27,19 @@ input uint               SymbolSell =         234;    // Symbol Sell
 input uint               SymbolSize =           1;    // Symbol Size
 input uint                TrendSize =           1;    // Trend Size
 input bool              TrendAsLine =       false;    // Show trend as line
-input bool              ShowAtPrice =       false;    // Show signal at real price
+input bool              ShowAtPrice =       true;    // Show signal at real price (makes placement intuitive)
 
-// Anti-noise parameters
+// Anti-noise parameters (tuned defaults)
 input uint ConfirmBars = 2;                   // number of consecutive bars that must confirm trend change
 input uint MinBarsBetweenSignals = 3;         // minimum bars between two signals of same type
-input double AdaptiveATRFactor = 0.25;        // fraction of ATR to use as adaptive threshold (0 disables if 0)
+input double AdaptiveATRFactor = 0.20;        // fraction of ATR to use as adaptive threshold (set 0 to disable)
 //+----------------------------------------------+
 
 double UpSignal[],DnSignal[];       // declaration of dynamic arrays, used as indicator buffers for signals
 double UpBuffer[],DnBuffer[];       // declaration of dynamic arrays, used as indicator buffers for the trend
 double MA[],ATR[];                  // declaration of dynamic arrays, used as internal buffers tu receive data from iMA and iATR
+// debug buffers: MA line and thresholds
+double MA_Line[], UpThreshold[], DownThreshold[];
 int    MA_Handle=INVALID_HANDLE,ATR_Handle=INVALID_HANDLE;        // declaration of integer variables, used for handles to iMA and iATR
 int    min_rates_total;             // declaration of integer variable for minimal data necessary
 double min_delta;   // declare minimal delta of ma as price (initialized in OnInit)
@@ -73,10 +75,15 @@ int OnInit()
    // reset buffer index before registering buffers
    buffer_idx = 0;
 
+   // order of InitBuffer calls defines buffer index mapping
    InitBuffer(UpBuffer,DRAW_WHAT ,"BuySell Trend up"   ,TrendSize ,clrLime,min_rates_total,158);
    InitBuffer(DnBuffer,DRAW_WHAT ,"BuySell Trend down" ,TrendSize ,clrRed ,min_rates_total,158);
    InitBuffer(UpSignal,DRAW_ARROW,"BuySell Signal up"  ,SymbolSize,clrLime,min_rates_total,SymbolBuy );
    InitBuffer(DnSignal,DRAW_ARROW,"BuySell Signal down",SymbolSize,clrRed ,min_rates_total,SymbolSell);
+   // debug / visual buffers
+   InitBuffer(MA_Line,DRAW_LINE,"MA Line",1,clrDodgerBlue,min_rates_total,0);
+   InitBuffer(UpThreshold,DRAW_LINE,"Upper Threshold",1,clrOrange,min_rates_total,0);
+   InitBuffer(DownThreshold,DRAW_LINE,"Lower Threshold",1,clrOrange,min_rates_total,0);
 
    // set flag to check handles/bars on first OnCalculate
    needCheckFlag = true;
@@ -153,11 +160,19 @@ int  OnCalculate( const int        rates_total,                // price[] array 
       DnBuffer[bar]=EMPTY_VALUE;
       UpSignal[bar]=EMPTY_VALUE;  
       DnSignal[bar]=EMPTY_VALUE;
+      MA_Line[bar]=EMPTY_VALUE;
+      UpThreshold[bar]=EMPTY_VALUE;
+      DownThreshold[bar]=EMPTY_VALUE;
 
       // compute adaptive threshold: max(user delta, fraction of ATR)
       double adaptive_min = min_delta;
       if(AdaptiveATRFactor>0 && ATR[bar]>0)
          adaptive_min = MathMax(adaptive_min, AdaptiveATRFactor * ATR[bar]);
+
+      // fill MA debug line and thresholds
+      MA_Line[bar] = MA[bar];
+      UpThreshold[bar] = MA[bar] + adaptive_min;
+      DownThreshold[bar] = MA[bar] - adaptive_min;
 
       // MA slope detection using adaptive threshold
       if(MA[bar]>MA[bar+1]+adaptive_min)                 // MA increases ?
@@ -178,29 +193,38 @@ int  OnCalculate( const int        rates_total,                // price[] array 
          if(!up_persist && !dn_persist) break;
       }
 
-      // issue buy signal
+      // if confirmed, place signal at the earliest bar of the confirmed block
       if(up_persist && (UpBuffer[bar] != EMPTY_VALUE))
       {
-         if(last_buy_bar < 0 || (last_buy_bar - bar) >= (int)MinBarsBetweenSignals)
+         int signal_bar = bar + (int)ConfirmBars - 1; // earliest bar in confirmed sequence
+         if(signal_bar >= 0)
          {
-            if(ShowAtPrice)
-               UpSignal[bar]=price[bar];                 // show signal at price
-            else
-               UpSignal[bar]=UpBuffer[bar];              //  show signal at MA
-            last_buy_bar = bar;
+            if(last_buy_bar < 0 || MathAbs(last_buy_bar - signal_bar) >= (int)MinBarsBetweenSignals)
+            {
+               if(ShowAtPrice)
+                  UpSignal[signal_bar] = price[signal_bar];
+               else
+                  UpSignal[signal_bar] = UpBuffer[signal_bar];
+               last_buy_bar = signal_bar;
+               PrintFormat("Buy signal at bar=%d price=%.5f adaptive_min=%.5f", signal_bar, price[signal_bar], adaptive_min);
+            }
          }
       }
 
-      // issue sell signal
       if(dn_persist && (DnBuffer[bar] != EMPTY_VALUE))
       {
-         if(last_sell_bar < 0 || (last_sell_bar - bar) >= (int)MinBarsBetweenSignals)
+         int signal_bar = bar + (int)ConfirmBars - 1; // earliest bar in confirmed sequence
+         if(signal_bar >= 0)
          {
-            if(ShowAtPrice)
-               DnSignal[bar]=price[bar];                 // show signal at price
-            else
-               DnSignal[bar]=DnBuffer[bar];              //  show signal at MA
-            last_sell_bar = bar;
+            if(last_sell_bar < 0 || MathAbs(last_sell_bar - signal_bar) >= (int)MinBarsBetweenSignals)
+            {
+               if(ShowAtPrice)
+                  DnSignal[signal_bar] = price[signal_bar];
+               else
+                  DnSignal[signal_bar] = DnBuffer[signal_bar];
+               last_sell_bar = signal_bar;
+               PrintFormat("Sell signal at bar=%d price=%.5f adaptive_min=%.5f", signal_bar, price[signal_bar], adaptive_min);
+            }
          }
       }
      }
