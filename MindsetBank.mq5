@@ -19,7 +19,7 @@
 input uint               MA_Period  =          14;
 input ENUM_MA_METHOD     MA_Method  =    MODE_SMA;    // MA method
 input ENUM_APPLIED_PRICE MA_Price   = PRICE_CLOSE;    // MA Price
-input double             MA_Delta   =           0;    // MA min slope for signal(dezimal points)
+input double             MA_Delta   =           0;    // MA min slope for signal (in ticks)
 input group "Appearance"
 input uint              ATR_Period  =          60;    // ATR Period
 input uint               SymbolBuy  =         233;    // Symbol Buy
@@ -28,6 +28,11 @@ input uint               SymbolSize =           1;    // Symbol Size
 input uint                TrendSize =           1;    // Trend Size
 input bool              TrendAsLine =       false;    // Show trend as line
 input bool              ShowAtPrice =       false;    // Show signal at real price
+
+// Anti-noise parameters
+input uint ConfirmBars = 2;                   // number of consecutive bars that must confirm trend change
+input uint MinBarsBetweenSignals = 3;         // minimum bars between two signals of same type
+input double AdaptiveATRFactor = 0.25;        // fraction of ATR to use as adaptive threshold (0 disables if 0)
 //+----------------------------------------------+
 
 double UpSignal[],DnSignal[];       // declaration of dynamic arrays, used as indicator buffers for signals
@@ -38,6 +43,8 @@ int    min_rates_total;             // declaration of integer variable for minim
 double min_delta;   // declare minimal delta of ma as price (initialized in OnInit)
 int    buffer_idx;  // buffer index used by InitBuffer
 bool   needCheckFlag; // flag to check handles/bars readiness
+int    last_buy_bar = -1;   // store last buy signal bar (series index); -1 means none yet
+int    last_sell_bar = -1;  // store last sell signal bar
 
 //+------------------------------------------------------------------+
 //| Custom indicator initialization function                         |
@@ -74,6 +81,10 @@ int OnInit()
    // set flag to check handles/bars on first OnCalculate
    needCheckFlag = true;
 
+   // reset last signal trackers
+   last_buy_bar = -1;
+   last_sell_bar = -1;
+
    return(INIT_SUCCEEDED);
 }
 
@@ -105,7 +116,8 @@ int  OnCalculate( const int        rates_total,                // price[] array 
       needCheckFlag=false;                                  // never check this again for this attachment
    }
 
-   int limit,to_copy,bar;                                      // declaration of local variables
+   int limit,to_copy,bar;
+
    // set starting bar index limit
    if(prev_calculated<=0)                                      // checking of first call
       limit=MathMax(0, rates_total-min_rates_total-2);         // starting bar index for all bars (clamped >=0)
@@ -119,7 +131,8 @@ int  OnCalculate( const int        rates_total,                // price[] array 
       if(limit<0) limit=0;
    }
 
-   to_copy = limit + 2;
+   // ensure we copy enough bars to support ConfirmBars checks (we access MA[bar+ConfirmBars])
+   to_copy = limit + 2 + ConfirmBars;
    if(to_copy < 2) to_copy = 2; // ensure at least two bars copied for bar+1 access
 
    // copy new data to arrays
@@ -141,26 +154,55 @@ int  OnCalculate( const int        rates_total,                // price[] array 
       UpSignal[bar]=EMPTY_VALUE;  
       DnSignal[bar]=EMPTY_VALUE;
 
-      if(MA[bar]>MA[bar+1]+min_delta)                 // MA increases ?
+      // compute adaptive threshold: max(user delta, fraction of ATR)
+      double adaptive_min = min_delta;
+      if(AdaptiveATRFactor>0 && ATR[bar]>0)
+         adaptive_min = MathMax(adaptive_min, AdaptiveATRFactor * ATR[bar]);
+
+      // MA slope detection using adaptive threshold
+      if(MA[bar]>MA[bar+1]+adaptive_min)                 // MA increases ?
          UpBuffer[bar]=MA[bar]-ATR[bar];              // from MA subtract ATR
 
-      if(MA[bar]<MA[bar+1]-min_delta)                 // MA decreases ?
+      if(MA[bar]<MA[bar+1]-adaptive_min)                 // MA decreases ?
          DnBuffer[bar]=MA[bar]+ATR[bar];              // to MA add ATR
 
-      // detect trend change by checking previous value for EMPTY_VALUE
-      if(UpBuffer[bar+1] == EMPTY_VALUE &&
-            UpBuffer[bar]   != EMPTY_VALUE)                   // trend changing ?
-         if(ShowAtPrice)
-            UpSignal[bar]=price[bar];                 // show signal at price
-         else
-            UpSignal[bar]=UpBuffer[bar];              //  show signal at MA
+      // Confirm signals only if trend persists for ConfirmBars bars
+      bool up_persist = true;
+      bool dn_persist = true;
+      int k;
+      for(k=0;k<ConfirmBars;k++)
+      {
+         // ensure we have enough buffered values (MA array size covers this due to to_copy)
+         if(!(MA[bar+k] > MA[bar+k+1] + adaptive_min)) up_persist = false;
+         if(!(MA[bar+k] < MA[bar+k+1] - adaptive_min)) dn_persist = false;
+         if(!up_persist && !dn_persist) break;
+      }
 
-      if(DnBuffer[bar+1] == EMPTY_VALUE &&
-            DnBuffer[bar]   != EMPTY_VALUE)                   // trend changing ?
-         if(ShowAtPrice)
-            DnSignal[bar]=price[bar];                 // show signal at price
-         else
-            DnSignal[bar]=DnBuffer[bar];              //  show signal at MA
+      // issue buy signal
+      if(up_persist && (UpBuffer[bar] != EMPTY_VALUE))
+      {
+         if(last_buy_bar < 0 || (last_buy_bar - bar) >= (int)MinBarsBetweenSignals)
+         {
+            if(ShowAtPrice)
+               UpSignal[bar]=price[bar];                 // show signal at price
+            else
+               UpSignal[bar]=UpBuffer[bar];              //  show signal at MA
+            last_buy_bar = bar;
+         }
+      }
+
+      // issue sell signal
+      if(dn_persist && (DnBuffer[bar] != EMPTY_VALUE))
+      {
+         if(last_sell_bar < 0 || (last_sell_bar - bar) >= (int)MinBarsBetweenSignals)
+         {
+            if(ShowAtPrice)
+               DnSignal[bar]=price[bar];                 // show signal at price
+            else
+               DnSignal[bar]=DnBuffer[bar];              //  show signal at MA
+            last_sell_bar = bar;
+         }
+      }
      }
 
    return(rates_total);
