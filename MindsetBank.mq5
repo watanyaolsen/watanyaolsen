@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright   "Copyright © 2026, AbahRay"
 #property link        "https://www.tiktok.com/@abahraytrader"
-#property version     "1.02"
+#property version     "1.03"
 #property description "Mindset Bank version\n"
 #property description "Original Code by AbahRay"
 
@@ -16,7 +16,7 @@
 //+----------------------------------------------+
 //| Indicator input parameters                   |
 //+----------------------------------------------+
-input uint               MA_Period  =          21;    // tuned for M1 responsiveness
+input uint               MA_Period  =          18;    // tuned for M1 responsiveness (reduced)
 input ENUM_MA_METHOD     MA_Method  =    MODE_SMA;    // MA method
 input ENUM_APPLIED_PRICE MA_Price   = PRICE_CLOSE;    // MA Price
 input double             MA_Delta   =           0;    // MA min slope for signal (in ticks); 0 = rely on ATR adaptive threshold
@@ -30,9 +30,9 @@ input bool              TrendAsLine =       false;    // Show trend as line
 input bool              ShowAtPrice =       true;    // Show signal at real price (makes placement intuitive)
 
 // Anti-noise parameters (tuned defaults)
-input uint ConfirmBars = 2;                   // number of consecutive bars that must confirm trend change
+input uint ConfirmBars = 1;                   // number of consecutive bars that must confirm trend change (reduced for responsiveness)
 input uint MinBarsBetweenSignals = 3;         // minimum bars between two signals of same type
-input double AdaptiveATRFactor = 0.20;        // fraction of ATR to use as adaptive threshold (set 0 to disable)
+input double AdaptiveATRFactor = 0.12;        // fraction of ATR to use as adaptive threshold (set 0 to disable)
 //+----------------------------------------------+
 
 double UpSignal[],DnSignal[];       // declaration of dynamic arrays, used as indicator buffers for signals
@@ -196,8 +196,8 @@ int  OnCalculate( const int        rates_total,                // price[] array 
       // if confirmed, place signal at the earliest bar of the confirmed block
       if(up_persist && (UpBuffer[bar] != EMPTY_VALUE))
       {
-         int signal_bar = bar + (int)ConfirmBars - 1; // earliest bar in confirmed sequence
-         if(signal_bar >= 0)
+         int signal_bar = bar + (int)ConfirmBars; // earliest bar in confirmed sequence (older index)
+         if(signal_bar >= 0 && signal_bar < rates_total)
          {
             if(last_buy_bar < 0 || MathAbs(last_buy_bar - signal_bar) >= (int)MinBarsBetweenSignals)
             {
@@ -213,8 +213,8 @@ int  OnCalculate( const int        rates_total,                // price[] array 
 
       if(dn_persist && (DnBuffer[bar] != EMPTY_VALUE))
       {
-         int signal_bar = bar + (int)ConfirmBars - 1; // earliest bar in confirmed sequence
-         if(signal_bar >= 0)
+         int signal_bar = bar + (int)ConfirmBars; // earliest bar in confirmed sequence (older index)
+         if(signal_bar >= 0 && signal_bar < rates_total)
          {
             if(last_sell_bar < 0 || MathAbs(last_sell_bar - signal_bar) >= (int)MinBarsBetweenSignals)
             {
